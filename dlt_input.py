@@ -11,11 +11,6 @@
 
 # COMMAND ----------
 
-# MAGIC %sql
-# MAGIC SELECT 1
-
-# COMMAND ----------
-
 import dlt
 
 # COMMAND ----------
@@ -24,7 +19,7 @@ import dlt
   table_properties={"quality" : "bronze"},
   comment = "Order bronze table"
 )
-def orders_broze():
+def orders_bronze():
     df = spark.readStream.table("dev.bronze.orders_raw")
     return df
 
@@ -41,10 +36,55 @@ def cust_broze():
 
 # COMMAND ----------
 
+@dlt.table(
+  table_properties={"quality" : "bronze"},
+  comment = "Customer bronze table",
+  name = "orders_autoloader_bronze"
+  )
+def orders_autoloader_bronze():  
+    df=(
+        spark
+        .readStream
+        .format("cloudFiles")
+        .option("cloudFiles.format", "csv")
+        .option("pathGlobFilter", "*.csv")
+        .option("header", "true")
+        .option("cloudFiles.schemaHints", "o_orderkey long, o_custkey long, o_orderstatus string, o_totalprice decimal(18,2), o_orderdate date, o_orderpriority string, o_clerk string, o_shippriority integer, o_comment string")
+        .option("cloudFiles.schemaLocation", "/Volumes/dev/etl/landing/autoloader/schemas/1/")
+        .option("cloudFiles.schemaEvolutionMode", "none")
+        .load("/Volumes/dev/etl/landing/files/")
+    )
+    return df
+
+# COMMAND ----------
+
+dlt.create_streaming_table("orders_union_bronze")
+
+#Append Order
+
+@dlt.append_flow(
+    target = "orders_union_bronze"
+)
+def orders_delta_append():
+    return(
+        spark.readStream.table("LIVE.orders_bronze")
+    )
+
+#Append autoloader
+@dlt.append_flow(
+    target = "orders_union_bronze"
+)
+def orders_autooader_append():
+    return(
+        spark.readStream.table("LIVE.orders_autoloader_bronze")
+    )
+
+# COMMAND ----------
+
 @dlt.view(comment = "Joined view")
 def joined_vw():
     df_c = spark.read.table("LIVE.customer_bronze")
-    df_o = spark.read.table("LIVE.orders_broze")
+    df_o = spark.read.table("LIVE.orders_union_bronze")
     df_join = df_o.join(df_c, how = "left_outer", on = df_c.c_custkey == df_o.o_custkey)
     return df_join
 
@@ -71,4 +111,4 @@ def joined_gold():
     df = spark.read.table("LIVE.joined_silver")\
         .groupBy("c_mktsegment").agg(count("o_orderkey").alias("sum_orders"))\
         .withColumn("__insert_date", current_timestamp())
-    return df
+    return df 
