@@ -30,14 +30,58 @@ def orders_bronze():
 
 # COMMAND ----------
 
-@dlt.table(
-  table_properties={"quality" : "bronze"},
-  comment = "Customer bronze table",
-  name = "customer_bronze"
+# @dlt.table(
+#   table_properties={"quality" : "bronze"},
+#   comment = "Customer bronze table",
+#   name = "customer_bronze"
+# )
+# def cust_broze():
+#     df = spark.read.table("dev.bronze.customer_raw")
+#     return df
+
+# COMMAND ----------
+
+#Customer materiaized view
+@dlt.view(
+  comment = "Customer bronze view",
+  name = "customer_bronze_view"
 )
-def cust_broze():
-    df = spark.read.table("dev.bronze.customer_raw")
+def cust_bronze():
+    df = spark.readStream.option("skipChangeCommits", "true").table("dev.bronze.customer_raw")
     return df
+
+# COMMAND ----------
+
+from pyspark.sql.functions import expr
+dlt.create_streaming_table("customer_scd1_bronze")
+
+#SCD type-1 customer
+dlt.apply_changes(
+    target = "customer_scd1_bronze",
+    source = "customer_bronze_view",
+    keys = ["c_custkey"],
+    stored_as_scd_type = 1,
+    sequence_by = "__src_insert_dt",
+    apply_as_deletes = expr("__src_action = 'D'"),
+    apply_as_truncates = expr("__src_action = 'T'")
+)
+#Streaming table used check point to ingest data incrementaly.
+
+# COMMAND ----------
+
+from pyspark.sql.functions import expr
+dlt.create_streaming_table("customer_scd2_bronze")
+
+#SCD type-2 customer
+dlt.apply_changes(
+    target = "customer_scd2_bronze",
+    source = "customer_bronze_view",
+    keys = ["c_custkey"],
+    stored_as_scd_type = 2,
+    sequence_by = "__src_insert_dt",
+    except_column_list = ["__src_action", "__src_insert_dt"]
+)
+#Streaming table used check point to ingest data incrementaly.
 
 # COMMAND ----------
 
@@ -89,7 +133,8 @@ def orders_autooader_append():
 
 @dlt.view(comment = "Joined view")
 def joined_vw():
-    df_c = spark.read.table("LIVE.customer_bronze")
+    #df_c = spark.read.table("LIVE.customer_bronze")
+    df_c = spark.read.table("LIVE.customer_scd2_bronze").where("__END_AT IS NULL")
     df_o = spark.read.table("LIVE.orders_union_bronze")
     df_join = df_o.join(df_c, how = "left_outer", on = df_c.c_custkey == df_o.o_custkey)
     return df_join
